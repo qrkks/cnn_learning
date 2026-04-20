@@ -22,3 +22,6 @@ data/
 *.jpeg
 *.bmp
 *.gif
+
+# Configurations
+.claude

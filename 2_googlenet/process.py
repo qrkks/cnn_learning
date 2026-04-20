@@ -8,7 +8,6 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 from pathlib import Path
-from torchviz import make_dot
 
 
 # ============================================================
@@ -508,11 +507,3 @@ with torch.no_grad():
 
 accuracy: float = 100.0 * correct / total
 print(f"\nTest Accuracy: {accuracy:.2f}%")
-
-
-# 构造一个假输入
-x = torch.randn(1, 3, 32, 32).to(device)
-y = forward(x)
-
-# 画出计算图
-make_dot(y, params=dict(layers.named_parameters())).render("cnn_net", format="png")

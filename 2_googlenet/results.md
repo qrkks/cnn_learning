@@ -1,5 +1,7 @@
 # Results
 
+## 30 epochs
+
 ```shell
 device = cuda
 
@@ -152,3 +154,11 @@ Epoch [30/30] Average Loss: 0.4297
 
 Test Accuracy: 81.50%
 ```
+
+## 100 epoches
+
+```shell
+
+```
+
+## End

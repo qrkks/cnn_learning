@@ -8,6 +8,7 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 from pathlib import Path
+from torchviz import make_dot
 
 
 # ============================================================
@@ -21,8 +22,8 @@ print("device =", device)
 # 训练轮数先设小一点，方便你快速跑通。
 num_epochs: int
 if device.type == "cuda":
-     num_epochs = 30  # Colab 免费 T4 GPU 上，30 个 epoch 大概 10 分钟，性价比不错
-num_epochs = 1 # 对于这个简单的图像分类任务，10 到 50 个 epoch 是性价比最高的选择。
+    num_epochs = 30  # Colab 免费 T4 GPU 上，30 个 epoch 大概 10 分钟，性价比不错
+num_epochs = 1  # 对于这个简单的图像分类任务，10 到 50 个 epoch 是性价比最高的选择。
 
 # batch size：每次喂给模型多少张图片
 batch_size: int = 128
@@ -32,7 +33,7 @@ Colab 免费 T4 GPU：128 最稳
 更大模型：32 / 64"""
 
 # 学习率
-learning_rate: float = 0.001 # Adam 优化器万能默认值，基本不会出错。
+learning_rate: float = 0.001  # Adam 优化器万能默认值，基本不会出错。
 
 # 是否打印每一层 shape
 verbose: bool = True
@@ -89,13 +90,16 @@ test_dataset: torchvision.datasets.CIFAR10 = torchvision.datasets.CIFAR10(
     root=data_dir, train=False, download=True, transform=transform_test
 )
 
-train_loader = torch.utils.data.DataLoader( # DataLoader 是 PyTorch 提供的一个工具，负责把 dataset 打包成一个个 batch，方便训练循环使用
-    train_dataset, batch_size=batch_size, shuffle=True # 使用训练集，一次打包128张图片，打乱顺序
+train_loader: torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]] = (
+    torch.utils.data.DataLoader(  # DataLoader 是 PyTorch 提供的一个工具，负责把 dataset 打包成一个个 batch，方便训练循环使用
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,  # 使用训练集，一次打包128张图片，打乱顺序
+    )
 )
 
-train_loader: torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]]
-test_loader: torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]] = torch.utils.data.DataLoader(
-    test_dataset, batch_size=batch_size, shuffle=False
+test_loader: torch.utils.data.DataLoader[tuple[torch.Tensor, torch.Tensor]] = (
+    torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 )
 
 # CIFAR-10 的 10 个类别，将数字标签映射成文字标签，方便看结果
@@ -137,7 +141,7 @@ def log_shape(name: str, x: torch.Tensor, verbose: bool = True) -> None:
 # “虽然没写 class，但还是要把所有层装起来，方便 optimizer 管理参数”
 # ============================================================
 
-layers = nn.ModuleDict( # 用 ModuleDict 把所有层装起来，方便管理参数。nn.ModuleDict = 给神经网络层起名字 + 装起来的 “带名字工具箱”。供 forward() 使用，也供 optimizer 管理参数。只是存放顺序，forward 函数里的调用顺序，才是真正的执行顺序。
+layers = nn.ModuleDict(  # 用 ModuleDict 把所有层装起来，方便管理参数。nn.ModuleDict = 给神经网络层起名字 + 装起来的 “带名字工具箱”。供 forward() 使用，也供 optimizer 管理参数。只是存放顺序，forward 函数里的调用顺序，才是真正的执行顺序。
     {
         # --------------------------------------------------------
         # Stem：网络最前面几层
@@ -153,7 +157,11 @@ layers = nn.ModuleDict( # 用 ModuleDict 把所有层装起来，方便管理参
         # - 温和地下采样
         # --------------------------------------------------------
         "conv1": nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
-        "relu1": nn.ReLU(inplace=True),
+        "relu1": nn.ReLU(
+            inplace=True
+        ),  # ReLU 激活函数，inplace=True 表示直接在输入上修改，节省内存。Rectified Linear Unit，线性整流函数，常用的激活函数之一，能引入非线性，使模型能够学习复杂的函数关系。
+        # 卷积在“找模式”，ReLU在“筛选有用模式”，多层叠加就变成“从简单到复杂识别”。
+        # 卷积是超级神经元；ReLU 是神经递质化学传导，既有开关，又有浓度信息。
         "conv2": nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
         "relu2": nn.ReLU(inplace=True),
         "maxpool1": nn.MaxPool2d(kernel_size=2, stride=2),  # 32x32 -> 16x16
@@ -218,7 +226,7 @@ layers = nn.ModuleDict( # 用 ModuleDict 把所有层装起来，方便管理参
 )
 
 # 把所有层搬到 device
-layers = layers.to(device) # 学习地点
+layers = layers.to(device)  # 学习地点
 layers: nn.ModuleDict
 
 
@@ -239,7 +247,7 @@ layers: nn.ModuleDict
 # ============================================================
 
 
-def forward(x: torch.Tensor, verbose: bool = False) -> torch.Tensor: # 干活步骤说明书
+def forward(x: torch.Tensor, verbose: bool = False) -> torch.Tensor:  # 干活步骤说明书
     # --------------------------------------------------------
     # 输入
     # CIFAR-10: (batch, 3, 32, 32)
@@ -500,3 +508,11 @@ with torch.no_grad():
 
 accuracy: float = 100.0 * correct / total
 print(f"\nTest Accuracy: {accuracy:.2f}%")
+
+
+# 构造一个假输入
+x = torch.randn(1, 3, 32, 32).to(device)
+y = forward(x)
+
+# 画出计算图
+make_dot(y, params=dict(layers.named_parameters())).render("cnn_net", format="png")

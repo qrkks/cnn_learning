@@ -10,8 +10,15 @@ wheels/
 .venv
 
 # Archives
-.tar.gz
-.zip
+*.tar.gz
+*.zip
 
 # Data files
 data/
+
+# Pictures
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.gif

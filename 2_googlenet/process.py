@@ -26,7 +26,7 @@ num_epochs = 1  # 对于这个简单的图像分类任务，10 到 50 个 epoch 
 
 # batch size：每次喂给模型多少张图片
 batch_size: int = 128
-"""常用参考（直接照抄）
+"""常用参考
 小模型 + CIFAR10：64 ~ 128（最好 128）
 Colab 免费 T4 GPU：128 最稳
 更大模型：32 / 64"""
@@ -38,8 +38,9 @@ learning_rate: float = 0.001  # Adam 优化器万能默认值，基本不会出�
 verbose: bool = True
 
 # 设定数据目录
-root_dir: Final[Path] = Path(__file__).parent.parent
-print("根目录:", root_dir)
+file_dir: Final[Path] = Path(__file__).parent
+root_dir: Final[Path] = file_dir.parent
+print("项目根目录:", root_dir)
 data_dir: Final[Path] = root_dir / "data"
 print("数据目录:", data_dir)
 
@@ -59,7 +60,7 @@ print("数据目录:", data_dir)
 #   标准化后大致落到 [-1,1]
 # ============================================================
 
-# 打包 transform：图片 → 张量 → 居中归一化
+# 使用 Compose 打包 transform：图片 → 张量 → 居中归一化
 transform_train: transforms.Compose = transforms.Compose(
     [
         transforms.ToTensor(),
@@ -140,10 +141,11 @@ def log_shape(name: str, x: torch.Tensor, verbose: bool = True) -> None:
 # “虽然没写 class，但还是要把所有层装起来，方便 optimizer 管理参数”
 # ============================================================
 
-layers = nn.ModuleDict(  # 用 ModuleDict 把所有层装起来，方便管理参数。nn.ModuleDict = 给神经网络层起名字 + 装起来的 “带名字工具箱”。供 forward() 使用，也供 optimizer 管理参数。只是存放顺序，forward 函数里的调用顺序，才是真正的执行顺序。
+# 使用 ModuleDict 手动做一个层的容器
+layers: nn.ModuleDict = nn.ModuleDict(  # 用 ModuleDict 把所有层装起来，方便管理参数。nn.ModuleDict = 给神经网络层起名字 + 装起来的 “带名字工具箱”。供 forward() 使用，也供 optimizer 管理参数。只是存放顺序，forward 函数里的调用顺序，才是真正的执行顺序。
     {
         # --------------------------------------------------------
-        # Stem：网络最前面几层
+        # Stem：网络最前面几层。初步提取特征，降低分辨率。
         #
         # 注意：
         # CIFAR-10 图片只有 32x32，很小
@@ -155,15 +157,16 @@ layers = nn.ModuleDict(  # 用 ModuleDict 把所有层装起来，方便管理�
         # - stride=1
         # - 温和地下采样
         # --------------------------------------------------------
-        "conv1": nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
+        "conv1": nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1), # 1×1 卷积是一种非常强大的工具，常常用于调整通道数。它能够在每个像素位置对输入的所有通道进行加权求和，这样可以有效地将不同通道的信息进行融合或压缩。因此，结合池化和 1×1 卷积，有助于捕捉更丰富的特征。
         "relu1": nn.ReLU(
             inplace=True
-        ),  # ReLU 激活函数，inplace=True 表示直接在输入上修改，节省内存。Rectified Linear Unit，线性整流函数，常用的激活函数之一，能引入非线性，使模型能够学习复杂的函数关系。
+        ),  
+        # ReLU 激活函数，inplace=True 表示直接在输入上修改，节省内存。Rectified Linear Unit，线性整流函数，常用的激活函数之一，能引入非线性，使模型能够学习复杂的函数关系。
         # 卷积在“找模式”，ReLU在“筛选有用模式”，多层叠加就变成“从简单到复杂识别”。
         # 卷积是超级神经元；ReLU 是神经递质化学传导，既有开关，又有浓度信息。
         "conv2": nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
         "relu2": nn.ReLU(inplace=True),
-        "maxpool1": nn.MaxPool2d(kernel_size=2, stride=2),  # 32x32 -> 16x16
+        "maxpool1": nn.MaxPool2d(kernel_size=2, stride=2),  # 128, 32x32 -> 128, 16x16
         # --------------------------------------------------------
         # Inception 3a
         # 输入通道: 128
@@ -178,7 +181,7 @@ layers = nn.ModuleDict(  # 用 ModuleDict 把所有层装起来，方便管理�
         # --------------------------------------------------------
         "inc3a_b1_conv1": nn.Conv2d(128, 32, kernel_size=1),
         "inc3a_b1_relu1": nn.ReLU(inplace=True),
-        "inc3a_b2_conv1": nn.Conv2d(128, 32, kernel_size=1),
+        "inc3a_b2_conv1": nn.Conv2d(128, 32, kernel_size=1), # 先用 1x1 卷积降维，减少后面 3x3 卷积的计算量。把冗余、重复的特征融合压缩，只保留最重要的特征。
         "inc3a_b2_relu1": nn.ReLU(inplace=True),
         "inc3a_b2_conv2": nn.Conv2d(32, 64, kernel_size=3, padding=1),
         "inc3a_b2_relu2": nn.ReLU(inplace=True),
@@ -186,14 +189,14 @@ layers = nn.ModuleDict(  # 用 ModuleDict 把所有层装起来，方便管理�
         "inc3a_b3_relu1": nn.ReLU(inplace=True),
         "inc3a_b3_conv2": nn.Conv2d(16, 16, kernel_size=5, padding=2),
         "inc3a_b3_relu2": nn.ReLU(inplace=True),
-        "inc3a_b4_pool": nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
+        "inc3a_b4_pool": nn.MaxPool2d(kernel_size=3, stride=1, padding=1), # 就相当于把图像压缩，同样的感受野获取更宏观的信息？是类似于稍远一点或眯着眼看图像？
         "inc3a_b4_conv1": nn.Conv2d(128, 16, kernel_size=1),
         "inc3a_b4_relu1": nn.ReLU(inplace=True),
         # --------------------------------------------------------
         # 再下一次池化
         # 16x16 -> 8x8
         # --------------------------------------------------------
-        "maxpool2": nn.MaxPool2d(kernel_size=2, stride=2),
+        "maxpool2": nn.MaxPool2d(kernel_size=2, stride=2), # 降宽高，保持通道数不变；128, 16x16 -> 128, 8x8
         # --------------------------------------------------------
         # Inception 3b
         # 输入通道: 128
@@ -216,17 +219,16 @@ layers = nn.ModuleDict(  # 用 ModuleDict 把所有层装起来，方便管理�
         "inc3b_b4_conv1": nn.Conv2d(128, 32, kernel_size=1),
         "inc3b_b4_relu1": nn.ReLU(inplace=True),
         # --------------------------------------------------------
-        # 分类头
+        # 分类头（Classification Head）
         # --------------------------------------------------------
-        "avgpool": nn.AdaptiveAvgPool2d((1, 1)),
-        "dropout": nn.Dropout(0.3),
-        "fc": nn.Linear(224, 10),
+        "avgpool": nn.AdaptiveAvgPool2d((1, 1)), # 全局平均池化，把每个通道的 8x8 特征图压成 1x1
+        "dropout": nn.Dropout(0.3), # 随机把30%的神经元设为0，防止过拟合；防止模型死记某些特征。
+        "fc": nn.Linear(224, 10), # 最后输出 10 个数，对应 CIFAR-10 的 10 个类别；输入 224 是因为 Inception 3b 输出的通道数是 224；全连接层把全局平均池化后的特征映射到 10 个类别的 logits。
     }
 )
 
 # 把所有层搬到 device
-layers = layers.to(device)  # 学习地点
-layers: nn.ModuleDict
+layers: nn.ModuleDict = layers.to(device)  # 学习地点
 
 
 # ============================================================
@@ -270,24 +272,24 @@ def forward(x: torch.Tensor, verbose: bool = False) -> torch.Tensor:  # 干活�
     # ========================================================
     # Inception 3a
     # ========================================================
-    inception_input = x
+    inception_input: torch.Tensor = x
     log_shape("inception3a input", inception_input, verbose)
 
     # -------------------------
     # branch1: 1x1
     # -------------------------
-    b1 = layers["inc3a_b1_conv1"](inception_input)
-    b1 = layers["inc3a_b1_relu1"](b1)
+    b1: torch.Tensor = layers["inc3a_b1_conv1"](inception_input)
+    b1: torch.Tensor = layers["inc3a_b1_relu1"](b1)
     log_shape("inc3a branch1", b1, verbose)  # (B,32,16,16)
 
     # -------------------------
     # branch2: 1x1 -> 3x3
     # 先降维，再卷积
     # -------------------------
-    b2 = layers["inc3a_b2_conv1"](inception_input)
-    b2 = layers["inc3a_b2_relu1"](b2)
-    b2 = layers["inc3a_b2_conv2"](b2)
-    b2 = layers["inc3a_b2_relu2"](b2)
+    b2: torch.Tensor = layers["inc3a_b2_conv1"](inception_input)
+    b2: torch.Tensor = layers["inc3a_b2_relu1"](b2)
+    b2: torch.Tensor = layers["inc3a_b2_conv2"](b2)
+    b2: torch.Tensor = layers["inc3a_b2_relu2"](b2)
     log_shape("inc3a branch2", b2, verbose)  # (B,64,16,16)
 
     # -------------------------
@@ -295,19 +297,19 @@ def forward(x: torch.Tensor, verbose: bool = False) -> torch.Tensor:  # 干活�
     # 感受野更大，但参数更贵
     # 所以前面先用 1x1 压通道
     # -------------------------
-    b3 = layers["inc3a_b3_conv1"](inception_input)
-    b3 = layers["inc3a_b3_relu1"](b3)
-    b3 = layers["inc3a_b3_conv2"](b3)
-    b3 = layers["inc3a_b3_relu2"](b3)
+    b3: torch.Tensor = layers["inc3a_b3_conv1"](inception_input)
+    b3: torch.Tensor = layers["inc3a_b3_relu1"](b3)
+    b3: torch.Tensor = layers["inc3a_b3_conv2"](b3)
+    b3: torch.Tensor = layers["inc3a_b3_relu2"](b3)
     log_shape("inc3a branch3", b3, verbose)  # (B,16,16,16)
 
     # -------------------------
     # branch4: pool -> 1x1
     # 池化之后再做通道投影
     # -------------------------
-    b4 = layers["inc3a_b4_pool"](inception_input)
-    b4 = layers["inc3a_b4_conv1"](b4)
-    b4 = layers["inc3a_b4_relu1"](b4)
+    b4: torch.Tensor = layers["inc3a_b4_pool"](inception_input)
+    b4: torch.Tensor = layers["inc3a_b4_conv1"](b4)
+    b4: torch.Tensor = layers["inc3a_b4_relu1"](b4)
     log_shape("inc3a branch4", b4, verbose)  # (B,16,16,16)
 
     # -------------------------
@@ -410,8 +412,8 @@ def forward(x: torch.Tensor, verbose: bool = False) -> torch.Tensor:  # 干活�
 #   入门时通常很好用，收敛比纯 SGD 更省心
 # ============================================================
 
-criterion: nn.CrossEntropyLoss = nn.CrossEntropyLoss()
-optimizer: optim.Adam = optim.Adam(layers.parameters(), lr=learning_rate)
+criterion: nn.CrossEntropyLoss = nn.CrossEntropyLoss() # 交叉熵损失函数，已经包含了 softmax，所以模型输出 logits 就行，不要自己再 softmax 了。计算损失。
+optimizer: optim.Adam = optim.Adam(layers.parameters(), lr=learning_rate) # Adam 优化器，更新参数。
 
 
 # ============================================================
@@ -420,15 +422,25 @@ optimizer: optim.Adam = optim.Adam(layers.parameters(), lr=learning_rate)
 # 这里只打印一次，防止训练时刷屏太厉害
 # ============================================================
 
+# 从训练加载器中获取一批样本
+sample_images: torch.Tensor
+sample_labels: torch.Tensor
 sample_images, sample_labels = next(iter(train_loader))
+
+# 将样本迁移到 GPU/CPU 计算
 sample_images = sample_images.to(device)
 sample_labels = sample_labels.to(device)
-
+ 
 print("\n================ SHAPE CHECK ================\n")
-with torch.no_grad():
+with torch.no_grad(): # 关闭梯度计算，用来做测试、推理、加速、省内存。只走前向。
     sample_outputs = forward(sample_images[:4], verbose=verbose)  # 只看前4张
 print("\n=============================================\n")
 
+# 👉 检查的是：
+# • ✔ shape 对不对
+# • ✔ concat 会不会炸
+# • ✔ FC 输入对不对
+# • ✔ forward 能不能跑通
 
 # ============================================================
 # 8. 训练循环
@@ -446,17 +458,17 @@ print("\n=============================================\n")
 
 for epoch in range(num_epochs):
     layers.train()  # 开启训练模式（dropout 生效）
-    running_loss = 0.0
+    running_loss = 0.0 # 累计多个 batch 的总损失，最后除以 batch 数得到平均损失
 
     for batch_idx, (images, labels) in enumerate(train_loader):
         images = images.to(device)
         labels = labels.to(device)
 
         # 前向传播
-        outputs = forward(images, verbose=False)
+        outputs: torch.Tensor = forward(images, verbose=False)
 
         # 计算损失
-        loss = criterion(outputs, labels)
+        loss: torch.Tensor = criterion(outputs, labels)
 
         # 梯度清零
         optimizer.zero_grad()
@@ -467,7 +479,7 @@ for epoch in range(num_epochs):
         # 更新参数
         optimizer.step()
 
-        running_loss += loss.item()
+        running_loss: float = running_loss + loss.item() # 累计多个 batch 的总损失
 
         # 每 100 个 batch 打印一次
         if (batch_idx + 1) % 100 == 0:
@@ -477,7 +489,7 @@ for epoch in range(num_epochs):
                 f"Loss: {loss.item():.4f}"
             )
 
-    avg_loss = running_loss / len(train_loader)
+    avg_loss: float = running_loss / len(train_loader)
     print(f"Epoch [{epoch + 1}/{num_epochs}] Average Loss: {avg_loss:.4f}")
 
 
@@ -494,16 +506,17 @@ total: int = 0
 
 with torch.no_grad():
     for images, labels in test_loader:
-        images = images.to(device)
-        labels = labels.to(device)
+        images: torch.Tensor = images.to(device)
+        labels: torch.Tensor = labels.to(device)
 
-        outputs = forward(images, verbose=False)
+        outputs: torch.Tensor = forward(images, verbose=False)
 
         # 取每一行中最大的那个类别下标
+        predicted: torch.Tensor
         _, predicted = torch.max(outputs, dim=1)
 
-        total += labels.size(0)
-        correct += (predicted == labels).sum().item()
+        total: int = total + int(labels.size(0))
+        correct: int = correct + int((predicted == labels).sum().item())
 
 accuracy: float = 100.0 * correct / total
 print(f"\nTest Accuracy: {accuracy:.2f}%")

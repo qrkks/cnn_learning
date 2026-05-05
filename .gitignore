@@ -25,3 +25,6 @@ data/
 
 # Configurations
 .claude
+
+# Tool logs
+sitemap_server.log

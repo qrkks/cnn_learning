@@ -74,7 +74,7 @@ CPU_TEST_LIMIT: Final[int] = 1024
 # GPU 模式：给 Colab 正式训练用。
 GPU_EPOCHS: Final[int] = 20
 GPU_BATCH_SIZE: Final[int] = 128
-GPU_LEARNING_RATE: Final[float] = 1e-3
+GPU_LEARNING_RATE: Final[float] = 1e-3  # 真正生产如何设置学习率？
 
 # True 表示第一批图片会打印每一层 shape。学习阶段建议开着。
 VERBOSE_SHAPES: Final[bool] = True
@@ -90,12 +90,12 @@ class TrainConfig:
     """
 
     data_dir: Path
-    batch_size: int 
-    epochs: int 
-    learning_rate: float 
-    train_limit: int | None 
-    test_limit: int | None 
-    num_workers: int 
+    batch_size: int
+    epochs: int
+    learning_rate: float
+    train_limit: int | None
+    test_limit: int | None
+    num_workers: int
     pin_memory: bool = False
     checkpoint_path: Path | None = None
     save_best: bool = False
@@ -263,7 +263,7 @@ class BasicBlock(nn.Module):
     一个 BasicBlock 有两条路：
 
     1. main path:
-       x -> Conv -> BN -> ReLU -> Conv -> BN
+       x -> Conv3*3 -> BN(Batch Normalization, 批量归一化) -> ReLU -> Conv3*3 -> BN
 
     2. shortcut path:
        x -> 原样返回
@@ -280,7 +280,10 @@ class BasicBlock(nn.Module):
     Tensor 相加要求 shape 完全一致，所以 shape 变化时必须用 projection shortcut。
     """
 
-    expansion: int = 1
+    expansion: int = (
+        1  # ResNet 18 里 BasicBlock 的 expansion 是 1，表示输出通道数和输入通道数相同。
+    )
+    # BasicBlock 的输出通道数和输入通道数相同，所以 expansion=1。BottleneckBlock 会有 expansion=4。
 
     def __init__(self, in_channels: int, out_channels: int, stride: int = 1) -> None:
         super().__init__()
@@ -292,6 +295,7 @@ class BasicBlock(nn.Module):
         self.conv2: nn.Conv2d = conv3x3(out_channels, out_channels)
         self.bn2: nn.BatchNorm2d = nn.BatchNorm2d(out_channels)
 
+        # 判断是否需要投影，对齐 main path (f(x)) 和 shortcut path (x) 的 shape：
         needs_projection: bool = stride != 1 or in_channels != out_channels
         if needs_projection:
             # 1x1 卷积只调整 shape：改变通道数，也可以用 stride 改变宽高。
@@ -308,11 +312,15 @@ class BasicBlock(nn.Module):
             )
         else:
             # shape 不变时，shortcut 就是真正的 identity：什么也不做，直接把 x 传过去。
-            self.shortcut = nn.Identity()
+            self.shortcut = (
+                nn.Identity()
+            )  # 不能使用x，因为 x 调用时才有的变量，创建实例时还没有x。
+            # 不能直接写成 lambda x: x。nn.Identity 是 PyTorch 提供的一个层，什么也不做，直接返回输入。
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # 先保存 shortcut 分支。
         # 这一步非常关键：后面 main path 会改变 x，但残差连接需要原始输入。
+
         identity: torch.Tensor = self.shortcut(x)
 
         # main path：学习残差 F(x)。
@@ -327,7 +335,7 @@ class BasicBlock(nn.Module):
         # 如果网络暂时学不到好东西，至少可以让 F(x) 接近 0，
         # 这样整个 block 接近 identity，不会把信息严重破坏。
         out = out + identity
-        out = self.relu(out)
+        out = self.relu(out)  # 加上 ReLU 激活函数，增加非线性，使模型更有表达能力。
         return out
 
 
@@ -346,68 +354,108 @@ class MiniResNet(nn.Module):
 
     def __init__(self, num_classes: int = 10) -> None:
         super().__init__()
+
+        # ===================== 全局配置 =====================
+        # 记录当前输入通道数，后面 _make_stage 会自动更新它
         self.in_channels: int = 16
 
+        # ===================== 网络第一层：Stem =====================
+        # 作用：把 3 通道原图 → 16 通道特征图，不改变尺寸 32x32
         self.stem: nn.Sequential = nn.Sequential(
+            # 卷积层：输入3通道，输出16通道，3x3卷积，步长1，填充1，保持尺寸不变
             nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False),
+            # 批归一化：加速训练、防止梯度消失
             nn.BatchNorm2d(16),
+            # 激活函数：增加非线性
             nn.ReLU(inplace=True),
         )
 
-        # 三个 stage：
-        # stage1: 保持 32x32，学习低层纹理
-        # stage2: 变成 16x16，通道变多，学习中层形状
-        # stage3: 变成 8x8，通道继续变多，学习更抽象语义
+        # ===================== 网络主体：3 个 Stage =====================
+        # 三个 stage 层层递进：图越来越小，通道越来越多，特征越来越抽象
+
+        # stage1: 保持 32x32 大小不变，学习低层纹理、边缘
         self.stage1: nn.Sequential = self._make_stage(
-            out_channels=16, blocks=2, stride=1
-        )
-        self.stage2: nn.Sequential = self._make_stage(
-            out_channels=32, blocks=2, stride=2
-        )
-        self.stage3: nn.Sequential = self._make_stage(
-            out_channels=64, blocks=2, stride=2
+            out_channels=16,  # 输出通道 16
+            blocks=2,  # 堆叠 2 个残差块
+            stride=1,  # 步长 1 → 不缩小图片
         )
 
-        # AdaptiveAvgPool2d((1, 1)) 会把任意 HxW 压成 1x1。
-        # 对 CIFAR-10 来说，最后 64 x 8 x 8 -> 64 x 1 x 1。
+        # stage2: 图片缩小到 16x16，通道升到 32，学习中层形状、结构
+        self.stage2: nn.Sequential = self._make_stage(
+            out_channels=32,  # 输出通道 32
+            blocks=2,  # 堆叠 2 个残差块
+            stride=2,  # 步长 2 → 图片宽高减半
+        )
+
+        # stage3: 图片缩小到 8x8，通道升到 64，学习高层抽象语义
+        self.stage3: nn.Sequential = self._make_stage(
+            out_channels=64,  # 输出通道 64
+            blocks=2,  # 堆叠 2 个残差块
+            stride=2,  # 步长 2 → 图片再减半
+        )
+
+        # ===================== 输出头部 =====================
+        # 自适应平均池化：把任意大小的特征图 → 强制变成 1x1
+        # 这里输入是 64x8x8 → 输出 64x1x1
         self.avg_pool: nn.AdaptiveAvgPool2d = nn.AdaptiveAvgPool2d((1, 1))
+
+        # 全连接层分类器：把 64 维特征 → 映射到 num_classes 个类别
         self.classifier: nn.Linear = nn.Linear(64, num_classes)
 
     def _make_stage(self, out_channels: int, blocks: int, stride: int) -> nn.Sequential:
-        """堆叠多个 BasicBlock。
-
-        每个 stage 的第一个 block 可能负责降采样，所以它使用传入的 stride。
-        后面的 block 都保持 shape，所以 stride=1。
         """
+        【内部工具函数】批量构建残差模块，自动生成一个完整的 stage
+        作用：根据传入的参数，自动堆叠 N 个 BasicBlock 并打包成 Sequential 返回
 
+        Args:
+            out_channels: 本阶段最终输出的特征图通道数
+            blocks: 本阶段需要堆叠多少个 BasicBlock 残差块
+            stride: 第一个残差块的步长，控制是否对图像进行下采样（尺寸减半）
+
+        Returns:
+            由多个残差块组成的 nn.Sequential 模块（一整段网络）
+        """
+        # 初始化一个列表，用于存放本阶段所有的网络层（残差块）
         layers: list[nn.Module] = [
+            # 第一个残差块：特殊处理
+            # 1. 可能会降采样（缩小图片），由 stride 控制
+            # 2. 可能会改变通道数，由 out_channels 控制
             BasicBlock(
-                in_channels=self.in_channels,
-                out_channels=out_channels,
-                stride=stride,
+                in_channels=self.in_channels,  # 输入通道 = 上一层留下来的通道数
+                out_channels=out_channels,  # 输出通道 = 本阶段指定的通道数
+                stride=stride,  # 步长：决定是否降采样
             )
         ]
+
+        # 更新全局通道数，供下一个 stage / block 使用
+        # 因为 BasicBlock 输出通道会乘以 expansion（通常是 1）
         self.in_channels = out_channels * BasicBlock.expansion
 
+        # 循环创建剩下的所有残差块
+        # 注意：从第 2 个 block 开始，全部使用 stride=1
+        # 作用：只学习特征，不改变特征图的尺寸和通道
+        # 不改变参数，只负责运行定义好的基础残差块，保持特征图尺寸不变，专注于学习更复杂的特征。
         for _ in range(1, blocks):
             layers.append(
                 BasicBlock(
                     in_channels=self.in_channels,
                     out_channels=out_channels,
-                    stride=1,
+                    stride=1,  # 固定步长 1，保证尺寸不变
                 )
             )
 
+        # 把所有层按顺序打包进 nn.Sequential 盒子，变成一个整体模块返回
         return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.stem(x)
-        x = self.stage1(x)
-        x = self.stage2(x)
-        x = self.stage3(x)
-        x = self.avg_pool(x)
-        x = torch.flatten(x, start_dim=1)
-        logits: torch.Tensor = self.classifier(x)
+        # 前向传播：数据按顺序流过网络
+        x = self.stem(x)  # 入口：提取基础特征
+        x = self.stage1(x)  # 第一阶段：纹理特征
+        x = self.stage2(x)  # 第二阶段：形状特征
+        x = self.stage3(x)  # 第三阶段：抽象特征
+        x = self.avg_pool(x)  # 压缩成 1x1
+        x = torch.flatten(x, start_dim=1)  # 展平成向量
+        logits: torch.Tensor = self.classifier(x)  # 分类输出
         return logits
 
 
@@ -469,15 +517,12 @@ def build_transforms() -> tuple[transforms.Compose, transforms.Compose]:
             # 1. 随机裁剪：把 32x32 图片先 padding 4 像素，再随机切回 32x32
             # 作用：让模型学不同位置的特征，防止过拟合
             transforms.RandomCrop(32, padding=4),
-
             # 2. 随机水平翻转：50%概率把图片左右翻转
             # 作用：数据增强，扩充样本多样性
             transforms.RandomHorizontalFlip(),
-
             # 3. 转张量：把 PIL 图片 → PyTorch 张量
             # 同时把像素值 0~255 → 归一化到 0~1
             transforms.ToTensor(),
-
             # 4. 标准化：用数据集的均值、方差做 Z-score 归一化
             # 作用：让模型训练更稳定、收敛更快
             transforms.Normalize(mean, std),
@@ -491,7 +536,6 @@ def build_transforms() -> tuple[transforms.Compose, transforms.Compose]:
             # 1. 只转张量，不做任何随机增强
             # 测试集必须保持原图，不能随机变换
             transforms.ToTensor(),
-
             # 2. 和训练集用**完全一样**的归一化
             # 保证训练/测试数据分布一致
             transforms.Normalize(mean, std),
@@ -578,10 +622,10 @@ def choose_device() -> torch.device:
 
 def accuracy_from_logits(
     logits: torch.Tensor,  # 模型输出的原始分数 (batch, 10)
-    labels: torch.Tensor   # 真实标签 (batch,) 比如 [3,5,1,0...]
-) -> float:               # 返回值：0~1 之间的准确率（小数）    
+    labels: torch.Tensor,  # 真实标签 (batch,) 比如 [3,5,1,0...]
+) -> float:  # 返回值：0~1 之间的准确率（小数）
     """根据 logits 计算一个 batch 的准确率。"""
-    predictions: torch.Tensor = torch.argmax(logits, dim=1) 
+    predictions: torch.Tensor = torch.argmax(logits, dim=1)
     correct: int = int((predictions == labels).sum().item())
     return correct / labels.numel()
 
@@ -596,37 +640,90 @@ def train_one_epoch(
     verbose_shapes: bool,
     non_blocking: bool = False,
 ) -> tuple[float, float]:
-    """训练一个 epoch，返回平均 loss 和平均 accuracy。"""
+    """
+    【单轮完整训练函数】
+    功能：对整个训练集进行一轮完整的训练（前向传播 + 反向传播 + 参数更新）
+    返回值：当前轮次的平均损失值 和 平均准确率
 
+    参数说明：
+        model: 我们定义的 MiniResNet 模型
+        train_loader: 加载 CIFAR-10 训练数据的迭代器
+        criterion: 损失函数（计算预测值和真实标签的误差）
+        optimizer: 优化器（用于更新模型权重）
+        device: 运行设备（CPU 或 GPU）
+        epoch: 当前是第几个训练轮次
+        verbose_shapes: 是否打印网络各层维度（调试用）
+        non_blocking: 是否开启异步数据传输（GPU 加速用）
+    """
+
+    # 将模型设置为【训练模式】
+    # 作用：启用 Dropout、BatchNorm 等在训练时才生效的层
     model.train()
-    total_loss: float = 0.0
-    total_correct: int = 0
-    total_examples: int = 0
 
+    # 初始化三个累加变量，用于统计整个 epoch 的结果
+    total_loss: float = 0.0  # 累计所有样本的总损失
+    total_correct: int = 0  # 累计预测正确的样本总数
+    total_examples: int = 0  # 累计参与训练的样本总数
+
+    # 遍历训练集中的每一个批次（batch）
+    # 一轮训练就是把所有 batch 都过一遍
     for batch_index, (images, labels) in enumerate(train_loader):
+        # 将图片数据移动到指定设备（CPU/GPU）
+        # non_blocking=True 可以加速 GPU 传输，不阻塞主线程
         images = images.to(device, non_blocking=non_blocking)
+        # 将标签数据同样移动到指定设备
         labels = labels.to(device, non_blocking=non_blocking)
 
+        # 调试代码：仅在【第1轮 + 第1个批次】时执行
+        # 作用：打印模型每一层的输入/输出形状，方便检查网络结构是否正确
         if epoch == 1 and batch_index == 0:
             explain_forward_shapes(model, images, verbose_shapes)
 
+        # ------------------- 训练核心五步 -------------------
+        # 1. 清空上一步残留的梯度
+        # 必须清空，否则梯度会累加，导致参数更新错误
         optimizer.zero_grad()
-        logits: torch.Tensor = model(images)
-        loss: torch.Tensor = criterion(logits, labels)
-        loss.backward()
-        optimizer.step()
 
+        # 2. 前向传播：将图片输入模型，得到输出预测值（logits）
+        # logits 是模型未经过 Softmax 的原始输出
+        logits: torch.Tensor = model(images)
+
+        # 3. 计算损失：对比预测值 logits 和 真实标签 labels
+        loss: torch.Tensor = criterion(logits, labels)
+
+        # 4. 反向传播：根据损失值，计算所有参数的梯度
+        loss.backward()
+
+        # 5. 更新参数：优化器根据计算出的梯度，一步更新模型权重
+        # 这一步是模型真正“学习”的地方
+        optimizer.step()
+        # ----------------------------------------------------
+
+        # ------------------- 统计指标计算 -------------------
+        # 获取当前批次的样本数量
         batch_size: int = labels.size(0)
+
+        # 累加当前批次的总损失（乘以批次大小，保证后续求平均正确）
         total_loss += float(loss.item()) * batch_size
+
+        # 统计当前批次预测正确的数量
+        # torch.argmax：取 logits 最大值的下标作为预测类别
+        # == labels：判断预测是否正确
+        # sum()：统计正确个数
         total_correct += int((torch.argmax(logits, dim=1) == labels).sum().item())
+
+        # 累加总样本数
         total_examples += batch_size
 
-    average_loss: float = total_loss / total_examples
-    average_accuracy: float = total_correct / total_examples
+    # 一轮训练结束，计算【平均损失】和【准确率】
+    average_loss: float = total_loss / total_examples  # 总损失 / 总样本数
+    average_accuracy: float = total_correct / total_examples  # 正确数 / 总样本数
+
+    # 返回本轮训练的最终平均指标
     return average_loss, average_accuracy
 
 
-@torch.no_grad()
+@torch.no_grad()  # 评估时不保存梯度，只正向传播，不反向传播，节省内存和计算资源
 def evaluate(
     model: MiniResNet,
     test_loader: DataLoader[CifarBatch],
@@ -725,25 +822,43 @@ def plot_history(history: TrainingHistory) -> None:
 def train(config: TrainConfig) -> TrainingResult:
     """完整训练入口：准备数据、创建模型、训练、评估。"""
 
+    # 1. 选择训练设备：自动判断用 CUDA(GPU) 还是 CPU
     device: torch.device = choose_device()
-    print(f"device = {device}")
-    print(f"data_dir = {config.data_dir}")
+    print(f"device = {device}")  # 打印设备信息
+    print(f"data_dir = {config.data_dir}")  # 打印数据集路径
 
+    # 2. 构建数据加载器：读取训练集 + 测试集，分批加载图片
     train_loader, test_loader = build_dataloaders(config)
+
+    # 3. 创建模型（MiniResNet），并把模型搬到选定的设备（GPU/CPU）上
     model = MiniResNet(num_classes=len(CIFAR10_CLASSES)).to(device)
+
+    # 4. 定义损失函数：分类任务标准的交叉熵损失（算出一个标题loss数值）
     criterion: nn.CrossEntropyLoss = nn.CrossEntropyLoss()
+
+    # 5. 定义优化器：Adam 优化器，负责更新模型权重，传入学习率
     optimizer: optim.Adam = optim.Adam(model.parameters(), lr=config.learning_rate)
+
+    # 6. 初始化历史记录对象：保存每一轮的 loss 和 accuracy，用于画图
     history = TrainingHistory(
         train_losses=[],
         train_accuracies=[],
         test_losses=[],
         test_accuracies=[],
     )
+
+    # 7. 初始化变量：记录测试集最高准确率
     best_test_accuracy: float = 0.0
+    # 记录最优模型保存路径
     best_checkpoint_path: Path | None = None
+    # 优化数据传输：只有 GPU + pin_memory 开启时才用异步拷贝
     non_blocking: bool = config.pin_memory and device.type == "cuda"
 
+    # ===================== 核心训练循环 =====================
+    # 循环训练多轮（epoch），每一轮完整过一遍训练集 + 测试集
     for epoch in range(1, config.epochs + 1):
+        # ----------------- 训练 1 个 epoch -----------------
+        # 前向传播 + 反向更新权重，返回本轮训练的平均损失和准确率
         train_loss, train_accuracy = train_one_epoch(
             model=model,
             train_loader=train_loader,
@@ -754,6 +869,9 @@ def train(config: TrainConfig) -> TrainingResult:
             verbose_shapes=config.verbose_shapes,
             non_blocking=non_blocking,
         )
+
+        # ----------------- 在测试集上评估模型 -----------------
+        # 只前向传播，不更新权重，返回测试损失和准确率
         test_loss, test_accuracy = evaluate(
             model=model,
             test_loader=test_loader,
@@ -762,15 +880,23 @@ def train(config: TrainConfig) -> TrainingResult:
             non_blocking=non_blocking,
         )
 
+        # ----------------- 记录历史数据 -----------------
+        # 把本轮的 训练loss/准确率、测试loss/准确率 存起来
         history.train_losses.append(train_loss)
         history.train_accuracies.append(train_accuracy)
         history.test_losses.append(test_loss)
         history.test_accuracies.append(test_accuracy)
 
+        # ----------------- 保存最优模型 -----------------
+        # 如果开启了保存最优模型，且路径不为空
         if config.save_best and config.checkpoint_path is not None:
+            # 如果当前测试准确率 ≥ 历史最高
             if test_accuracy >= best_test_accuracy:
+                # 更新最高准确率
                 best_test_accuracy = test_accuracy
+                # 记录最优模型路径
                 best_checkpoint_path = config.checkpoint_path
+                # 保存模型 checkpoint（存档）
                 save_checkpoint(
                     model=model,
                     checkpoint_path=config.checkpoint_path,
@@ -778,13 +904,17 @@ def train(config: TrainConfig) -> TrainingResult:
                     test_accuracy=test_accuracy,
                     config=config,
                 )
+                # 打印提示：已保存最优模型
                 checkpoint_note: str = f" | saved {config.checkpoint_path}"
             else:
+                # 准确率没提升，不保存
                 checkpoint_note = ""
         else:
+            # 没开启保存，则只更新最高准确率，不存文件
             best_test_accuracy = max(best_test_accuracy, test_accuracy)
             checkpoint_note = ""
 
+        # ----------------- 打印本轮训练结果 -----------------
         print(
             f"epoch {epoch:02d}/{config.epochs} | "
             f"train loss {train_loss:.4f}, train acc {train_accuracy * 100:.2f}% | "
@@ -792,6 +922,8 @@ def train(config: TrainConfig) -> TrainingResult:
             f"{checkpoint_note}"
         )
 
+    # ===================== 训练结束 =====================
+    # 返回最终结果：模型、训练历史、最佳准确率、最优模型路径
     return TrainingResult(
         model=model,
         history=history,

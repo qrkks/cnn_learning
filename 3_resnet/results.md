@@ -1,3 +1,5 @@
+# ResNet Results
+
 ```bash
 CUDA detected: using full CIFAR-10 training settings.
 device = cuda

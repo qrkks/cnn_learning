@@ -1,0 +1,14 @@
+{
+  "python.analysis.typeCheckingMode": "off",
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportArgumentType": "none",
+    "reportAssignmentType": "none",
+    "reportAttributeAccessIssue": "none",
+    "reportCallIssue": "none",
+    "reportGeneralTypeIssues": "none",
+    "reportIndexIssue": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportReturnType": "none"
+  },
+  "ruff.nativeServer": "auto"
+}

@@ -1,4 +1,4 @@
-# ResNet Results
+# Results
 
 ```bash
 CUDA detected: using full CIFAR-10 training settings.

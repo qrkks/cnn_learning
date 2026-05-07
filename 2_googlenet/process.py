@@ -21,8 +21,9 @@ print("device =", device)
 # 训练轮数先设小一点，方便你快速跑通。
 num_epochs: int
 if device.type == "cuda":
-    num_epochs = 30  # Colab 免费 T4 GPU 上，30 个 epoch 大概 10 分钟，性价比不错
-num_epochs = 1  # 对于这个简单的图像分类任务，10 到 50 个 epoch 是性价比最高的选择。
+    num_epochs = 100  # Colab GPU 上跑完整训练，方便和 ResNet 章节保持同一量级。
+else:
+    num_epochs = 1  # CPU 只做烟雾测试，确认流程能跑通即可。
 
 # batch size：每次喂给模型多少张图片
 batch_size: int = 128

@@ -152,7 +152,7 @@ def make_auto_config() -> TrainConfig:
             checkpoint_path=default_checkpoint_path(),
             image_size=96,
             batch_size=32,
-            epochs=3,
+            epochs=30,
             learning_rate=1e-3,
             train_limit=None,
             test_limit=None,

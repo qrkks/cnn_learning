@@ -72,7 +72,7 @@ CPU_TRAIN_LIMIT: Final[int] = 4096
 CPU_TEST_LIMIT: Final[int] = 1024
 
 # GPU 模式：给 Colab 正式训练用。
-GPU_EPOCHS: Final[int] = 20
+GPU_EPOCHS: Final[int] = 100
 GPU_BATCH_SIZE: Final[int] = 128
 GPU_LEARNING_RATE: Final[float] = 1e-3  # 真正生产如何设置学习率？
 

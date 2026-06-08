@@ -42,6 +42,14 @@ cd C:\Coding\Curriculum\cnn_learning
 把当前仓库推到 GitHub 后，在 Colab 中运行：
 
 ```python
+from google.colab import drive
+drive.mount('/content/drive')
+
+OUTPUT_DIR = '/content/drive/MyDrive/kvasir_colab_outputs'
+!mkdir -p "{OUTPUT_DIR}"
+
+%cd /content
+!rm -rf cnn_learning
 !git clone https://github.com/qrkks/cnn_learning.git
 %cd cnn_learning/4_medical_segmentation
 !pip install -r requirements.txt
@@ -51,24 +59,38 @@ cd C:\Coding\Curriculum\cnn_learning
 
 ```python
 !mkdir -p data
-!wget -O data/kvasir-seg.zip https://datasets.simula.no/downloads/kvasir-seg.zip
-!unzip -q data/kvasir-seg.zip -d data
+!rm -f data/kvasir-seg.zip
+!wget --no-check-certificate -O data/kvasir-seg.zip https://datasets.simula.no/downloads/kvasir-seg.zip
+!python -c "import zipfile; assert zipfile.is_zipfile('data/kvasir-seg.zip'), 'Downloaded file is not a valid zip.'"
+!unzip -q -o data/kvasir-seg.zip -d data
 !ls data/Kvasir-SEG
 ```
 
 训练和评估：
 
 ```python
-!python src/train.py --config configs/colab.yaml
-!python src/evaluate.py --config configs/colab.yaml --checkpoint outputs/colab/best_model.pth --num-visuals 8
+!python src/train.py --config configs/colab.yaml --output-dir "{OUTPUT_DIR}"
+!python src/evaluate.py --config configs/colab.yaml --checkpoint "{OUTPUT_DIR}/best_model.pth" --output-dir "{OUTPUT_DIR}" --num-visuals 8
 ```
 
 主要输出：
 
-- `outputs/colab/best_model.pth`
-- `outputs/colab/history.csv`
-- `outputs/colab/metrics_val.json`
-- `outputs/colab/predictions/*.png`
+- `/content/drive/MyDrive/kvasir_colab_outputs/best_model.pth`
+- `/content/drive/MyDrive/kvasir_colab_outputs/history.csv`
+- `/content/drive/MyDrive/kvasir_colab_outputs/metrics_val.json`
+- `/content/drive/MyDrive/kvasir_colab_outputs/training_curves.png`
+- `/content/drive/MyDrive/kvasir_colab_outputs/predictions/*.png`
+
+打包并下载结果：
+
+```python
+import shutil
+from google.colab import files
+
+zip_base = '/content/kvasir_colab_outputs'
+shutil.make_archive(zip_base, 'zip', root_dir='/content/drive/MyDrive', base_dir='kvasir_colab_outputs')
+files.download(zip_base + '.zip')
+```
 
 ## 方法概述
 

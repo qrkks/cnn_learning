@@ -2,6 +2,13 @@ data/
 sample_data/
 outputs/*
 !outputs/.gitkeep
+!outputs/colab/
+outputs/colab/*
+!outputs/colab/history.csv
+!outputs/colab/metrics_val.json
+!outputs/colab/training_curves.png
+!outputs/colab/predictions/
+outputs/colab/predictions/*
+!outputs/colab/predictions/*.png
 __pycache__/
 *.pyc
-

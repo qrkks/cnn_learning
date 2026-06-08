@@ -1,0 +1,7 @@
+data/
+sample_data/
+outputs/*
+!outputs/.gitkeep
+__pycache__/
+*.pyc
+
